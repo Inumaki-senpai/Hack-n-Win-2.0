@@ -12,95 +12,95 @@ engine = pyttsx3.init()
 engine.setProperty("rate", 130)
 engine.setProperty("volume", 1.0)
 voices = engine.getProperty("voices")
-engine.setProperty("voice", voices[0].id)  # Adjust index if needed
+engine.setProperty("voice", voices[0].id)
 
 # Open camera
 cap = cv2.VideoCapture(0)
 
-# Variables to prevent frequent speaking
-last_spoken = None
+# Cooldown timer for speech
 last_speak_time = time.time()
+last_spoken = None
 
-def recognize_sign_language(landmarks):
-    """ Recognize common sign language gestures based on finger positions """
+# Store last 5 gestures to stabilize detection
+gesture_history = []
 
-    try:
-        # Finger states: 1 = Up, 0 = Down
-        finger_states = []
+def recognize_gesture(landmarks):
+    """Recognizes hand gestures based on finger positions"""
+    finger_states = []  # 1 if extended, 0 if folded
 
-        # Thumb detection using Y-coordinates
-        thumb_tip = landmarks[4]
-        thumb_mcp = landmarks[2]  # MCP joint (closer to palm)
+    # Thumb detection (checks both x and y position)
+    thumb_tip = landmarks[4]
+    thumb_mcp = landmarks[2]
+    if thumb_tip.y < thumb_mcp.y and abs(thumb_tip.x - thumb_mcp.x) > 0.05:
+        finger_states.append(1)  # Thumb extended
+    else:
+        finger_states.append(0)  # Thumb folded
 
-        if thumb_tip.y < thumb_mcp.y:  # Thumb is pointing up
-            finger_states.append(1)
+    # Other fingers (checks tip vs PIP joint, with threshold)
+    for tip, pip in [(8, 6), (12, 10), (16, 14), (20, 18)]:
+        if landmarks[tip].y < (landmarks[pip].y - 0.03):  # More lenient threshold
+            finger_states.append(1)  # Finger extended
         else:
-            finger_states.append(0)
+            finger_states.append(0)  # Finger folded
 
-        # Other fingers: Tip vs. PIP joint
-        for tip, pip in [(8, 6), (12, 10), (16, 14), (20, 18)]:
-            if landmarks[tip].y < landmarks[pip].y:
-                finger_states.append(1)  # Finger is extended
-            else:
-                finger_states.append(0)
+    # Convert to string pattern
+    gesture_pattern = "".join(map(str, finger_states))
 
-        # Convert pattern to a string
-        gesture_pattern = "".join(map(str, finger_states))
+    # Additional check for "No" (Index + Middle Extended, Close Together)
+    if finger_states == [0, 1, 1, 0, 0]:  
+        index_x = landmarks[8].x
+        middle_x = landmarks[12].x
+        if abs(index_x - middle_x) < 0.03:  # Fingers should be very close
+            return "No"
 
-        # Sign Language Gestures
-        signs = {
-            "11111": "Hello 👋",
-            "11000": "Yes 👍",
-            "10000": "No 👎",
-            "10101": "I Love You 🤟",
-            "01111": "Thank You 🙏",
-            "00011": "Help 🤲",
-            "11110": "Stop ✋",
-            "01100": "Goodbye 👋"
-        }
+    # Sign language gestures
+    gestures = {
+        "11111": "Hello",        # Open Palm
+        "00000": "Yes",          # Fist
+        "11000": "Thumbs Up",    # Only Thumb Extended
+        "00100": "Peace",        # Index + Middle Extended (V Sign)
+        "01001": "I Love You",   # Index + Pinky + Thumb Up
+    }
 
-        return signs.get(gesture_pattern, "Unknown Sign")
-        
+    return gestures.get(gesture_pattern, "Unknown Gesture")
 
-    except Exception as e:
-        print(f"Error in recognition: {e}")
-        return "Error"
-
-# Process video stream
+# Start Video Processing
 with mp_hands.Hands(min_detection_confidence=0.8, min_tracking_confidence=0.8) as hands:
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
-            print("Error: Camera not detected.")
             break
 
         # Convert frame to RGB
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = hands.process(frame_rgb)
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = hands.process(frame)
 
         # Convert back to BGR
-        frame = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
-        # Process detected hands
+        # Process hand landmarks
         if results.multi_hand_landmarks:
             for hand_landmarks in results.multi_hand_landmarks:
-                # Draw hand landmarks
                 mp_drawing.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
 
-                # Recognize sign language gesture
-                sign = recognize_sign_language(hand_landmarks.landmark)
+                # Recognize gesture
+                gesture = recognize_gesture(hand_landmarks.landmark)
 
-                # Speak the recognized gesture (Only if stable for 2 seconds)
-                current_time = time.time()
-                if sign != last_spoken and sign != "Error" and current_time - last_speak_time > 2:
-                    print(f"Detected Sign: {sign}")
-                    engine.say(sign)
-                    engine.runAndWait()
-                    last_spoken = sign
-                    last_speak_time = current_time  # Update last spoken time
+                # Stabilization: Store last 5 gestures
+                gesture_history.append(gesture)
+                if len(gesture_history) > 5:
+                    gesture_history.pop(0)
 
-                # Display the recognized sign
-                cv2.putText(frame, f"Sign: {sign}", (50, 50),
+                # Speak only if the last 5 frames detected the same gesture
+                if len(set(gesture_history)) == 1 and gesture != last_spoken and gesture != "Unknown Gesture":
+                    if time.time() - last_speak_time > 2:  # 2-second cooldown
+                        engine.say(gesture)
+                        engine.runAndWait()
+                        last_spoken = gesture
+                        last_speak_time = time.time()
+
+                # Display the recognized gesture
+                cv2.putText(frame, f"Gesture: {gesture}", (50, 50),
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
         # Show video feed
